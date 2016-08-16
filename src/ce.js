@@ -380,6 +380,7 @@ var ce = {
                 'appHost': instance.get_config('app_host'),
                 'bookmarkletMode': !!state['bookmarkletMode'],
                 'projectId': state['projectId'],
+                'projectOwnerId': state['projectOwnerId'],
                 'projectToken': state['token'],
                 'userFlags': state['userFlags'],
                 'userId': state['userId']
