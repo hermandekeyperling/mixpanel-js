@@ -1,3 +1,27 @@
+**2.9.10** (16 Aug 2016)
+Autotrack:
+- Bugfix: use indexOf instead of startsWith
+
+**2.9.9** (16 Aug 2016)
+Autotrack:
+- Do not delay navigation when the href is just a hash
+
+**2.9.8** (15 Aug 2016)
+Autotrack:
+- Properly handle getting class names from SVGs
+- Add readOnly parameter for Autotrack editor
+- Reconstruct Autotrack editor URL to avoid build issue
+- More tests
+
+**2.9.7** (11 Aug 2016)
+Autotrack:
+- Don't attach property keys of stripped values to events
+- Tests
+
+**2.9.6** (8 Aug 2016)
+Autotrack:
+- Delay navigation on link clicks for better tracking
+
 **2.9.5** (27 Jul 2016)
 - Autotrack: remove dependency on nearestInteractiveElement and fix a few autotrack edge cases
 

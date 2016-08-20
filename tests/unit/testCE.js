@@ -1,6 +1,8 @@
+import os from 'os';
 import { expect } from 'chai';
 import jsdom from 'mocha-jsdom';
 import sinon from 'sinon';
+import nodeLocalStorage from 'node-localstorage';
 
 import { DISABLE_COOKIE, ce } from '../../src/ce';
 import { _ } from '../../src/utils';
@@ -8,8 +10,6 @@ import { _ } from '../../src/utils';
 jsdom({
   url: 'https://mixpanel.com/about/?query=param'
 });
-
-let clock = sinon.useFakeTimers();
 
 const triggerMouseEvent = function(node, eventType) {
   node.dispatchEvent(new MouseEvent(eventType, {
@@ -23,6 +23,16 @@ const simulateClick = function(el) {
 }
 
 describe('Collect Everything system', function() {
+  before(function() {
+    // jsdom doesn't have support for local/session storage
+    // add support using this node implementation
+    window.sessionStorage = nodeLocalStorage.LocalStorage(os.tmpdir() + '/tmpSessionStorage');
+  });
+
+  beforeEach(function() {
+    window.sessionStorage.clear();
+  });
+
   describe('_shouldTrackDomEvent', function() {
     const _shouldTrackDomEvent = ce._shouldTrackDomEvent;
 
@@ -88,7 +98,7 @@ describe('Collect Everything system', function() {
   });
 
   describe('_getPropertiesFromElement', function() {
-    let div, div2, input, hidden, password;
+    let div, div2, input, sensitiveInput, hidden, password;
     before(function() {
       div = document.createElement('div');
       div.className = 'class1 class2 class3'
@@ -96,6 +106,10 @@ describe('Collect Everything system', function() {
 
       input = document.createElement('input');
       input.value = 'test val';
+
+      sensitiveInput = document.createElement('input');
+      sensitiveInput.value = 'test val';
+      sensitiveInput.className = 'mp-sensitive';
 
       hidden = document.createElement('input');
       hidden.setAttribute('type', 'hidden');
@@ -114,13 +128,14 @@ describe('Collect Everything system', function() {
       div2.appendChild(divSibling2);
       div2.appendChild(div);
       div2.appendChild(input);
+      div2.appendChild(sensitiveInput);
       div2.appendChild(hidden);
       div2.appendChild(password);
     });
 
     it('should contain the proper tag name', function() {
       const props = ce._getPropertiesFromElement(div);
-      expect(props['tag_name']).to.equal('DIV');
+      expect(props['tag_name']).to.equal('div');
     });
 
     it('should contain class list', function() {
@@ -133,14 +148,19 @@ describe('Collect Everything system', function() {
       expect(props['value']).to.equal('test val');
     });
 
+    it('should strip input value with class "mp-sensitive"', function() {
+      const props = ce._getPropertiesFromElement(sensitiveInput);
+      expect(props['value']).to.equal(undefined);
+    });
+
     it('should strip hidden input value', function() {
       const props = ce._getPropertiesFromElement(hidden);
-      expect(props['value']).to.equal('[stripped]');
+      expect(props['value']).to.equal(undefined);
     });
 
     it('should strip password input value', function() {
       const props = ce._getPropertiesFromElement(password);
-      expect(props['value']).to.equal('[stripped]');
+      expect(props['value']).to.equal(undefined);
     });
 
     it('should contain nth-of-type', function() {
@@ -150,7 +170,7 @@ describe('Collect Everything system', function() {
 
     it('should contain nth-child', function() {
       const props = ce._getPropertiesFromElement(password);
-      expect(props['nth_child']).to.equal(6);
+      expect(props['nth_child']).to.equal(7);
     });
   });
 
@@ -167,7 +187,7 @@ describe('Collect Everything system', function() {
       const input = document.createElement('input');
       input.setAttribute('type', 'checkbox');
       input.value = 'checkbox val';
-      expect(ce._getInputValue(input)).to.equal(undefined);
+      expect(ce._getInputValue(input)).to.equal(null);
       input.checked = true;
       expect(ce._getInputValue(input)).to.deep.equal(['checkbox val']);
     });
@@ -176,7 +196,7 @@ describe('Collect Everything system', function() {
       const input = document.createElement('input');
       input.setAttribute('type', 'radio');
       input.value = 'radio val';
-      expect(ce._getInputValue(input)).to.equal(undefined);
+      expect(ce._getInputValue(input)).to.equal(null);
       input.checked = true;
       expect(ce._getInputValue(input)).to.equal('radio val');
     });
@@ -213,40 +233,62 @@ describe('Collect Everything system', function() {
     });
   });
 
-  describe('_sanitizeInputValue', function() {
-    let input;
+  describe('_includeProperty', function() {
+    let input, parent1, parent2;
 
     beforeEach(function() {
       input = document.createElement('input');
+      parent1 = document.createElement('div');
+      parent2 = document.createElement('div');
+      parent1.appendChild(input);
+      parent2.appendChild(parent1);
+      document.body.appendChild(parent2);
     });
 
-    it('should never sanitize inputs with class "mp-never-strip-value"', function() {
+    it('should return false when the value is null', function() {
       input.type = 'password';
-      input.className = 'test1 mp-never-strip-value test2';
+      input.className = 'test1 test2';
       input.value = 'force included password';
-      expect(ce._sanitizeInputValue(input, input.value)).to.equal('force included password');
+      expect(ce._includeProperty(input, null)).to.equal(false);
     });
 
-    it('should sanitize inputs with class "mp-always-strip-value"', function() {
-      input.type = 'text';
-      input.className = 'test1 mp-always-strip-value test2';
-      input.value = 'force sanitized';
-      expect(ce._sanitizeInputValue(input, input.value)).to.equal('[stripped]');
-    });
-
-    it('should sanitize hidden fields', function() {
-      input.type = 'hidden';
-      input.value = 'hidden val';
-      expect(ce._sanitizeInputValue(input, input.value)).to.equal('[stripped]');
-    });
-
-    it('should sanitize password fields', function() {
+    it('should include sensitive inputs with class "mp-include"', function() {
       input.type = 'password';
-      input.value = 'password val';
-      expect(ce._sanitizeInputValue(input, input.value)).to.equal('[stripped]');
+      input.className = 'test1 mp-include test2';
+      expect(ce._includeProperty(input, 'some password')).to.equal(true);
+      expect(ce._includeProperty(input, null)).to.equal(true);
     });
 
-    it('should sanitize fields with sensitive names', function() {
+    it('should never include inputs with class "mp-sensitive"', function() {
+      input.type = 'text';
+      input.className = 'test1 mp-include mp-sensitive test2';
+      expect(ce._includeProperty(input, 'some value')).to.equal(false);
+      expect(ce._includeProperty(input, null)).to.equal(false);
+    });
+
+    it('should not include elements with class "mp-no-track" as properties', function() {
+      input.type = 'text';
+      input.className = 'test1 mp-no-track test2';
+      expect(ce._includeProperty(input, 'some value')).to.equal(false);
+    });
+
+    it('should not include elements with a parent that have class "mp-no-track" as properties', function() {
+      parent2.className = 'mp-no-track';
+      input.type = 'text';
+      expect(ce._includeProperty(input, 'some value')).to.equal(false);
+    });
+
+    it('should not include hidden fields', function() {
+      input.type = 'hidden';
+      expect(ce._includeProperty(input, 'some value')).to.equal(false);
+    });
+
+    it('should not include password fields', function() {
+      input.type = 'password';
+      expect(ce._includeProperty(input, 'some value')).to.equal(false);
+    });
+
+    it('should not include fields with sensitive names', function() {
       const sensitiveNames = [
         'cc_name',
         'card-num',
@@ -264,46 +306,31 @@ describe('Collect Everything system', function() {
         'SsN',
       ];
       input.type = 'text';
-      input.value = 'should be strippedl';
       sensitiveNames.forEach(name => {
         input.name = name;
-        expect(ce._sanitizeInputValue(input, input.value)).to.equal('[stripped]');
+        expect(ce._includeProperty(input, 'some value')).to.equal(false);
       });
     });
 
-    it('should strip numbers that look like valid credit cards', function() {
+    it('should not include numbers that look like valid credit cards', function() {
       input.type = 'text';
       // one for each type on http://www.getcreditcardnumbers.com/
       const validCCNumbers = ['3419-881002-84912', '30148420855976', '5183792099737678', '6011-5100-8788-7057', '180035601937848', '180072512946394', '4556617778508'];
       validCCNumbers.forEach(num => {
-        expect(ce._sanitizeInputValue(input, num)).to.equal('[stripped]');
+        expect(ce._includeProperty(input, num)).to.equal(false);
       });
     });
 
-    it('should strip social security numbers', function() {
+    it('should not include values that look like social security numbers', function() {
       input.type = 'text';
       input.value = '123-45-6789';
-      expect(ce._sanitizeInputValue(input, input.value)).to.equal('[stripped]');
+      expect(ce._includeProperty(input, input.value)).to.equal(false);
     });
 
-    it('should return the original value for non-sensitive inputs', function() {
+    it('should include non-sensitive inputs', function() {
       input.type = 'text';
       input.value = 'Josh';
-      expect(ce._sanitizeInputValue(input, input.value)).to.equal('Josh');
-    });
-
-    it('should return the original value for multi selects', function() {
-      const select = document.createElement('select');
-      const option1 = document.createElement('option');
-      const option2 = document.createElement('option');
-      select.setAttribute('multiple', true);
-      option1.value = '1';
-      option2.value = '2';
-      select.appendChild(option1);
-      select.appendChild(option2);
-      option1.setAttribute('selected', true);
-      option2.setAttribute('selected', true);
-      expect(ce._sanitizeInputValue(input, ce._getSelectValue(select))).to.deep.equal(['1', '2']);
+      expect(ce._includeProperty(input, input.value)).to.equal(true);
     });
   });
 
@@ -537,6 +564,51 @@ describe('Collect Everything system', function() {
       sandbox.restore();
     });
 
+    it('should add the custom property when an element matching any of the event selectors is clicked', function() {
+      lib = {
+        _send_request: sandbox.spy((url, params, callback) => callback({
+          config: {
+            enable_collect_everything: true
+          },
+          custom_properties: [{event_selectors: ['.event-element-1', '.event-element-2'], css_selector: '.property-element', name: 'my property name'}]
+        })),
+        _prepare_callback: sandbox.spy(callback => callback),
+        get_config: sandbox.spy(function(key) {
+          switch (key) {
+            case 'decide_host':
+              return 'https://test.com';
+            case 'token':
+              return 'testtoken';
+          }
+        }),
+        token: 'testtoken',
+        track: sandbox.spy()
+      };
+      ce.init(lib);
+
+      const eventElement1 = document.createElement('div');
+      const eventElement2 = document.createElement('div');
+      const propertyElement = document.createElement('div');
+      eventElement1.className = 'event-element-1';
+      eventElement2.className = 'event-element-2';
+      propertyElement.className = 'property-element';
+      propertyElement.textContent = 'my property value';
+      document.body.appendChild(eventElement1);
+      document.body.appendChild(eventElement2);
+      document.body.appendChild(propertyElement);
+
+      simulateClick(eventElement1);
+      simulateClick(eventElement2);
+      expect(lib.track.callCount).to.equal(3); // 2 + 1 for the pageview event
+      const trackArgs1 = lib.track.args[1];
+      const trackArgs2 = lib.track.args[2];
+      const eventType1 = trackArgs1[1]['my property name'];
+      const eventType2 = trackArgs2[1]['my property name'];
+      expect(eventType1).to.equal('my property value');
+      expect(eventType2).to.equal('my property value');
+      lib.track.reset();
+    });
+
     it('includes necessary metadata as properties when tracking an event', function() {
       const elTarget = document.createElement('a');
       elTarget.setAttribute('href', 'http://test.com');
@@ -546,6 +618,7 @@ describe('Collect Everything system', function() {
       elGrandparent.appendChild(elParent);
       const elGreatGrandparent = document.createElement('table');
       elGreatGrandparent.appendChild(elGrandparent);
+      document.body.appendChild(elGreatGrandparent);
       const e = {
         target: elTarget,
         type: 'click',
@@ -560,8 +633,9 @@ describe('Collect Everything system', function() {
       expect(props['$event_type']).to.equal('click');
       expect(props).to.have.property('$host', 'mixpanel.com');
       expect(props).to.have.property('$el_attr__href', 'http://test.com');
-      expect(props['$elements'][1]).to.have.property('tag_name', 'SPAN');
-      expect(props['$elements'][2]).to.have.property('tag_name', 'DIV');
+      expect(props['$elements'][1]).to.have.property('tag_name', 'span');
+      expect(props['$elements'][2]).to.have.property('tag_name', 'div');
+      expect(props['$elements'][props['$elements'].length - 1]).to.have.property('tag_name', 'body');
     });
 
     it('gets the href attribute from parent anchor tags', function() {
@@ -700,9 +774,22 @@ describe('Collect Everything system', function() {
     const lib = {
       track: sinon.spy()
     };
+
+    let navigateSpy;
+
     before(function() {
       document.title = 'test page';
       ce._addDomEventHandlers(lib);
+      navigateSpy = sinon.spy(ce, '_navigate');
+    });
+
+    beforeEach(function() {
+      navigateSpy.reset();
+      lib.track.reset();
+    });
+
+    after(function() {
+      navigateSpy.restore();
     });
 
     it('should track click events', function() {
@@ -719,6 +806,62 @@ describe('Collect Everything system', function() {
       expect(eventType2).to.equal('click');
       lib.track.reset();
     });
+
+    it('should delay navigation on link clicks', function(done) {
+      const a = document.createElement('a');
+      a.href = 'http://test.com';
+      document.body.appendChild(a);
+      simulateClick(a);
+      expect(lib.track.calledOnce).to.equal(true);
+      expect(navigateSpy.callCount).to.equal(0);
+      setTimeout(function() {
+        expect(navigateSpy.calledWithExactly('http://test.com'));
+        done();
+      }, 301);
+    });
+
+    it('should not delay navigation when href starts with #', function(done) {
+      const a = document.createElement('a');
+      a.href = '#some-hash';
+      document.body.appendChild(a);
+      simulateClick(a);
+      expect(lib.track.calledOnce).to.equal(true);
+      expect(navigateSpy.callCount).to.equal(0);
+      setTimeout(function() {
+        expect(navigateSpy.callCount).to.equal(0);
+        done();
+      }, 301);
+    });
+
+    it('should not delay navigation when href starts with /#', function(done) {
+      const a = document.createElement('a');
+      a.href = '/#/some-hash';
+      document.body.appendChild(a);
+      simulateClick(a);
+      expect(lib.track.calledOnce).to.equal(true);
+      expect(navigateSpy.callCount).to.equal(0);
+      setTimeout(function() {
+        expect(navigateSpy.callCount).to.equal(0);
+        done();
+      }, 301);
+    });
+
+    it('should respect preventDefault on link clicks', function(done) {
+      const a = document.createElement('a');
+      a.href = 'http://test.com';
+      document.body.appendChild(a);
+      document.body.addEventListener('click', function(e) {
+        e.preventDefault();
+      });
+      simulateClick(a);
+      expect(lib.track.calledOnce).to.equal(true);
+      expect(navigateSpy.callCount).to.equal(0);
+      setTimeout(function() {
+        expect(navigateSpy.callCount).to.equal(0);
+        done();
+      }, 301);
+    });
+
   });
 
   describe('init', function() {
@@ -805,30 +948,10 @@ describe('Collect Everything system', function() {
   });
 
   describe('_maybeLoadEditor', function() {
-    let _window, hash, editorParams, sandbox, lib = {};
+    let hash, editorParams, sandbox, lib = {};
     beforeEach(function() {
-      _window = window;
-      const _storage = {};
-      window = {
-        location: {
-          hash: '',
-        },
-        sessionStorage: {
-          setItem: function(k, v) {
-            _storage[k] = v;
-          },
-          getItem: function(k) {
-            if (_storage.hasOwnProperty(k)) {
-              return _storage[k];
-            } else {
-              return null;
-            }
-          },
-          removeItem: function(k) {
-            delete _storage[k];
-          },
-        },
-      };
+      this.clock = sinon.useFakeTimers();
+
       sandbox = sinon.sandbox.create();
       sandbox.stub(ce, '_loadEditor');
       sandbox.spy(window.sessionStorage, 'setItem');
@@ -848,6 +971,7 @@ describe('Collect Everything system', function() {
         desiredHash: '#myhash',
         projectId: 3,
         projectOwnerId: 722725,
+        readOnly: false,
         token: 'test_token',
         userFlags,
         userId: 12345,
@@ -865,6 +989,7 @@ describe('Collect Everything system', function() {
         projectId: 3,
         projectOwnerId: 722725,
         projectToken: 'test_token',
+        readOnly: false,
         userFlags,
         userId: 12345,
       };
@@ -873,8 +998,8 @@ describe('Collect Everything system', function() {
     });
 
     afterEach(function() {
-      window = _window;
       sandbox.restore();
+      this.clock.restore();
     });
 
     it('should initialize the visual editor when the hash state contains action "mpeditor"', function() {
@@ -917,15 +1042,7 @@ describe('Collect Everything system', function() {
       lib.get_config = sandbox.stub();
       lib.get_config.withArgs('app_host').returns('mixpanel.com');
       lib.get_config.withArgs('token').returns('token');
-      window = {
-        location: {
-          reload: sinon.spy(),
-        },
-        mp_load_editor: sandbox.spy(),
-        sessionStorage: {
-          setItem: sinon.spy(),
-        },
-      };
+      window.mp_load_editor = sandbox.spy();
     });
 
     afterEach(function() {
@@ -953,7 +1070,11 @@ describe('Collect Everything system', function() {
 
   describe('track backoff', function() {
     beforeEach(function() {
-      clock = sinon.useFakeTimers();
+      this.clock = sinon.useFakeTimers();
+    });
+
+    after(function() {
+      this.clock.restore();
     });
 
     it('should not track when the cookie is set', function() {
@@ -976,13 +1097,13 @@ describe('Collect Everything system', function() {
       expect(ce._trackEvent.called).to.equal(false);
 
       // test 1 millisecond before expiration
-      clock.tick(999);
+      this.clock.tick(999);
       expect(_.cookie.parse(DISABLE_COOKIE)).to.equal(true);
       simulateClick(document.body);
       expect(ce._trackEvent.called).to.equal(false);
 
       // test at expiration
-      clock.tick(1);
+      this.clock.tick(1);
       expect(_.cookie.parse(DISABLE_COOKIE)).to.equal(null);
       simulateClick(document.body);
       expect(ce._trackEvent.called).to.equal(true);

@@ -2,7 +2,7 @@ define(function () { 'use strict';
 
     var Config = {
         DEBUG: false,
-        LIB_VERSION: '2.9.5'
+        LIB_VERSION: '2.9.10'
     };
 
     // since es6 imports are static and we run unit tests from the console, window won't be defined when importing this file
@@ -1001,7 +1001,9 @@ define(function () { 'use strict';
                 secure = '; secure';
             }
 
-            document$1.cookie = name + '=' + encodeURIComponent(value) + expires + '; path=/' + cdomain + secure;
+            var new_cookie_val = name + '=' + encodeURIComponent(value) + expires + '; path=/' + cdomain + secure;
+            document$1.cookie = new_cookie_val;
+            return new_cookie_val;
         },
 
         remove: function(name, cross_subdomain) {
@@ -1558,7 +1560,7 @@ define(function () { 'use strict';
             } else {
                 do {
                     el = el.previousSibling;
-                } while (el && el.nodeType !== 1);
+                } while (el && el.nodeType !== ELEMENT_NODE);
                 return el;
             }
         },
@@ -1577,14 +1579,25 @@ define(function () { 'use strict';
             }
         },
 
+        _getClassName: function(elem) {
+            if (elem.tagName.toLowerCase() === 'svg') {
+                return elem.className.baseVal || elem.getAttribute('class') || '';
+            } else {
+                return elem.className || '';
+            }
+        },
+
         _getPropertiesFromElement: function(elem) {
             var props = {
-                'classes': elem.className.split(' '),
-                'tag_name': elem.tagName
+                'classes': this._getClassName(elem).split(' '),
+                'tag_name': elem.tagName.toLowerCase()
             };
 
             if (_.includes(['input', 'select', 'textarea'], elem.tagName.toLowerCase())) {
-                props['value'] = this._getFormFieldValue(elem);
+                var formFieldValue = this._getFormFieldValue(elem);
+                if (this._includeProperty(elem, formFieldValue)) {
+                    props['value'] = formFieldValue;
+                }
             }
 
             _.each(elem.attributes, function(attr) {
@@ -1607,13 +1620,12 @@ define(function () { 'use strict';
         },
 
         _shouldTrackDomEvent: function(element, event) {
-            if (!element || element === document || element === document.body || element.nodeType !== ELEMENT_NODE) {
+            if (!element || element === document || element === document.body.parentNode || element.nodeType !== ELEMENT_NODE) {
                 return false;
             }
             var tag = element.tagName.toLowerCase();
             switch (tag) {
                 case 'html':
-                case 'body':
                     return false;
                 case 'form':
                     return event.type === 'submit';
@@ -1641,7 +1653,7 @@ define(function () { 'use strict';
         },
 
         _getInputValue: function(input) {
-            var value;
+            var value = null;
             var type = input.type.toLowerCase();
             switch(type) {
                 case 'checkbox':
@@ -1675,28 +1687,36 @@ define(function () { 'use strict';
             return value;
         },
 
-        _sanitizeInputValue: function(input, value) {
-            var classes = (input.className || '').split(' ');
-            if (_.includes(classes, 'mp-never-strip-value')) { // never sanitize inputs with class "mp-never-strip-value"
-                return value;
-            } else if (_.includes(classes, 'mp-always-strip-value')) { // always sanitize fields with class "mp-always-strip-value"
-                return '[stripped]';
+        _includeProperty: function(input, value) {
+            for (var curEl = input; curEl.parentNode && curEl !== document.body; curEl = curEl.parentNode) {
+                var classes = this._getClassName(curEl).split(' ');
+                if (_.includes(classes, 'mp-sensitive') || _.includes(classes, 'mp-no-track')) {
+                    return false;
+                }
+            }
+
+            if (_.includes(this._getClassName(input).split(' '), 'mp-include')) {
+                return true;
+            }
+
+            if (value === null) {
+                return false;
             }
 
             // don't include hidden or password fields
             var type = input.type || '';
             switch(type.toLowerCase()) {
                 case 'hidden':
-                    return '[stripped]';
+                    return false;
                 case 'password':
-                    return '[stripped]';
+                    return false;
             }
 
             // filter out data from fields that look like sensitive fields
             var name = input.name || input.id || '';
             var sensitiveNameRegex = /^cc|cardnum|ccnum|creditcard|csc|cvc|cvv|exp|pass|seccode|securitycode|securitynum|socialsec|socsec|ssn/i;
             if (sensitiveNameRegex.test(name.replace(/[^a-zA-Z0-9]/g, ''))) {
-                return '[stripped]';
+                return false;
             }
 
             if (typeof value === 'string') {
@@ -1704,18 +1724,17 @@ define(function () { 'use strict';
                 // see: https://www.safaribooksonline.com/library/view/regular-expressions-cookbook/9781449327453/ch04s20.html
                 var ccRegex = /^(?:(4[0-9]{12}(?:[0-9]{3})?)|(5[1-5][0-9]{14})|(6(?:011|5[0-9]{2})[0-9]{12})|(3[47][0-9]{13})|(3(?:0[0-5]|[68][0-9])[0-9]{11})|((?:2131|1800|35[0-9]{3})[0-9]{11}))$/;
                 if (ccRegex.test((value || '').replace(/[\- ]/g, ''))) {
-                    return '[stripped]';
+                    return false;
                 }
 
                 // check to see if input value looks like a social security number
                 var ssnRegex = /(^\d{3}-?\d{2}-?\d{4}$)/;
                 if (ssnRegex.test(value)) {
-                    return '[stripped]';
+                    return false;
                 }
             }
 
-            // return unmodified value
-            return value;
+            return true;
         },
 
         _getFormFieldValue: function(field) {
@@ -1731,7 +1750,7 @@ define(function () { 'use strict';
                     val = field.value || field.textContent;
                     break;
             }
-            return this._sanitizeInputValue(field, val);
+            return this._includeProperty(field, val) ? val : null;
         },
 
         _getFormFieldProperties: function(form) {
@@ -1741,7 +1760,7 @@ define(function () { 'use strict';
                 if (name !== null) {
                     name = '$form_field__' + name;
                     var val = this._getFormFieldValue(field);
-                    if (val !== undefined) {
+                    if (this._includeProperty(field, val)) {
                         var prevFieldVal = formFieldProps[name];
                         if (prevFieldVal !== undefined) { // combine values for inputs of same name
                             formFieldProps[name] = [].concat(prevFieldVal, val);
@@ -1791,15 +1810,18 @@ define(function () { 'use strict';
             }
         },
 
-        _trackEvent: function(e, instance) {
-            /*** Don't mess with this code without running IE8 tests on it ***/
-            var target;
+        _getEventTarget: function(e) {
+            // https://developer.mozilla.org/en-US/docs/Web/API/Event/target#Compatibility_notes
             if (typeof e.target === 'undefined') {
-                target = e.srcElement;
+                return e.srcElement;
             } else {
-                target = e.target;
+                return e.target;
             }
+        },
 
+        _trackEvent: function(e, instance, callback) {
+            /*** Don't mess with this code without running IE8 tests on it ***/
+            var target = this._getEventTarget(e);
             if (target.nodeType === TEXT_NODE) { // defeat Safari bug (see: http://www.quirksmode.org/js/events_properties.html)
                 target = target.parentNode;
             }
@@ -1807,7 +1829,7 @@ define(function () { 'use strict';
             if (this._shouldTrackDomEvent(target, e)) {
                 var targetElementList = [target];
                 var curEl = target;
-                while (curEl.parentNode && curEl.parentNode !== document.body) {
+                while (curEl.parentNode && curEl !== document.body) {
                     targetElementList.push(curEl.parentNode);
                     curEl = curEl.parentNode;
                 }
@@ -1831,7 +1853,7 @@ define(function () { 'use strict';
                     }
 
                     // allow users to programatically prevent tracking of elements by adding class 'mp-no-track'
-                    var classes = (el.className || '').split(' ');
+                    var classes = this._getClassName(el).split(' ');
                     if (_.includes(classes, 'mp-no-track')) {
                         explicitNoTrack = true;
                     }
@@ -1856,16 +1878,56 @@ define(function () { 'use strict';
                 if (form && (e.type === 'submit' || e.type === 'click')) {
                     _.extend(props, this._getFormFieldProperties(form));
                 }
-                instance.track('$web_event', props);
+                instance.track('$web_event', props, callback);
                 return true;
             }
+        },
+
+        // only reason is to stub for unit tests
+        // since you can't override window.location props
+        _navigate: function(href) {
+            window.location.href = href;
         },
 
         _addDomEventHandlers: function(instance) {
             var handler = _.bind(function(e) {
                 if (_.cookie.parse(DISABLE_COOKIE) !== true) {
                     e = e || window.event;
-                    this._trackEvent(e, instance);
+                    var callback = function(){};
+
+                    // special case anchor tags to wait for mixpanel track to complete
+                    var element = this._getEventTarget(e);
+                    var href = element.tagName.toLowerCase() === 'a' && element.getAttribute('href');
+                    var willNavigate = href && !(href.indexOf('#') === 0 || href.indexOf('/#') === 0);
+                    if (!e.defaultPrevented && willNavigate) {
+                        if (!(e.which === 2 || e.metaKey || e.ctrlKey || element.target === '_blank')) { // if not opening in a new tab
+                            e.preventDefault();
+
+                            // allow other handlers to preventDefault
+                            e.preventDefault = function() {
+                                e.defaultPreventedAfterMixpanelHandler = true;
+                            };
+
+                            // setup a callback to navigate to the anchor's href after
+                            // track is complete OR 300ms whichever comes first.
+                            var that = this;
+                            callback = (function(evt) {
+                                var href = evt.target.href;
+                                return function() {
+                                    if (!evt.defaultPreventedAfterMixpanelHandler) {
+                                        that._navigate(href);
+                                    }
+                                };
+                            }(e));
+
+                            // fallback in case track is too slow
+                            setTimeout(function() {
+                                callback();
+                            }, 300);
+                        }
+                    }
+
+                    this._trackEvent(e, instance, callback);
                 }
             }, this);
             _.register_event(document, 'submit', handler, false, true);
@@ -1924,6 +1986,7 @@ define(function () { 'use strict';
                     'bookmarkletMode': !!state['bookmarkletMode'],
                     'projectId': state['projectId'],
                     'projectToken': state['token'],
+                    'readOnly': state['readOnly'],
                     'userFlags': state['userFlags'],
                     'userId': state['userId']
                 };
@@ -1982,10 +2045,11 @@ define(function () { 'use strict';
                 this._editorLoaded = true;
                 var editorUrl;
                 var cacheBuster = '?_ts=' + (new Date()).getTime();
+                var siteMedia = instance.get_config('app_host') + '/site_media';
                 if (Config.DEBUG) {
-                    editorUrl = instance.get_config('app_host') + '/site_media/compiled/reports/collect-everything/editor.js' + cacheBuster;
+                    editorUrl = siteMedia + '/compiled/reports/collect-everything/editor.js' + cacheBuster;
                 } else {
-                    editorUrl = instance.get_config('app_host') + '/site_media/bundle-webpack/reports/collect-everything/editor.min.js' + cacheBuster;
+                    editorUrl = siteMedia + '/bundle-webpack/reports/collect-everything/editor.min.js' + cacheBuster;
                 }
                 this._loadScript(editorUrl, function() {
                     window['mp_load_editor'](editorParams);
